@@ -1,0 +1,101 @@
+---
+title: "DEA_MIRNA"
+output: html_document
+---
+
+# Packages
+
+```{r}
+# Loading Required Packages
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(org.Hs.eg.db)
+library(data.table)
+if (!require(ggrepel)) install.packages('ggrepel')
+if (!require(DESeq2)) BiocManager::install('DESeq2')
+if (!require(limma)) BiocManager::install('limma')
+if (!require(EDASeq)) BiocManager::install('EDASeq')
+if (!require(edgeR)) BiocManager::install('edgeR')
+if (!require(ggsci)) install.packages('ggsci')
+library(ggrepel)
+library(DESeq2)
+library(limma)
+library(EDASeq)
+library(edgeR)
+library(ggsci)
+```
+
+#MIRNA ANALYSIS
+
+```{r}
+# Loading Data
+load(file="~/desktop/Multimodal/DEA/DEA_Files/Barcodes/Bad_Barcodes.Rdata")
+load(file="~/desktop/Multimodal/miRNA/miRNA_processed.RData") #miRNA from Preprocessing
+
+# Taking only genes
+LUSC_miRNA <- column_to_rownames(LUSC_miRNA, "barcode")
+LUSC_miRNA <- LUSC_miRNA %>% dplyr::select(starts_with("h"))
+LUSC_miRNA <- as.matrix(t(LUSC_miRNA))
+class(LUSC_miRNA) <- "numeric"
+
+# Function that will help split data into bad and good prognosis barcodes
+outersect <- function(x, y) {
+  big.vec <- c(x, y)
+  duplicates <- big.vec[duplicated(big.vec)]
+  setdiff(big.vec, unique(duplicates)) }
+
+# Splitting Data into Bad and Good Prognosis
+BadPrognosis_Cluster <- Bad_Barcodes
+GoodPrognosis_Cluster <- outersect(BadPrognosis_Cluster, colnames(LUSC_miRNA))
+BadPrognosis <- subset(LUSC_miRNA, TRUE, c(BadPrognosis_Cluster))
+GoodPrognosis <- subset(LUSC_miRNA, TRUE, c(GoodPrognosis_Cluster))
+
+# Putting Data Together and Adding Labels for Group
+Final_Matrix <- cbind(GoodPrognosis, BadPrognosis)
+Good <- rep("GoodPrognosis", 405) #knowing there are 405 good prognosis pts and data is in order
+Bad <- rep("BadPrognosis", 327)
+col <- c(Good,Bad)
+col <- as.data.frame(col)
+colnames(col) <- "Condition"
+col$Condition <- as.factor(col$Condition)
+col$Condition <- relevel(col$Condition, "GoodPrognosis")
+```
+
+## Running DEA
+
+```{r}
+# differential expression analysis
+dds <- DESeqDataSetFromMatrix(countData = round(Final_Matrix), colData = col,
+design = ~ Condition) # look at differentially expressed based on good or bad prognosis
+dds <- DESeq(dds)
+res <- results(dds, pAdjustMethod = "fdr") #adjusting based on false discovery rate
+res <- res[order(res$padj),] # ordering by p-value
+res <- as.data.frame(res)
+write.csv(as.data.frame(res), file="~/desktop/Multimodal/DEA/DEA_Results/miRNA_results.csv") #Saving Results from DEA Analysis
+```
+
+# VOLCANO PLOT CODE
+
+```{r}
+res <- read.csv(file="~/desktop/Multimodal/DEA/DEA_Results/miRNA_results.csv") # Re-loading data
+
+# Adding new columns to see which genes are significantly differentially expressed
+res$diffexpressed <- "NO" # Default
+# if log2Foldchange > 0.58 and pvalue < 0.05, set as "UP"
+res$diffexpressed[res$log2FoldChange > 0.58 & res$padj < 0.05] <- "UP"
+# if log2Foldchange < -0.58 and pvalue < 0.05, set as "DOWN"
+res$diffexpressed[res$log2FoldChange < -0.58 & res$padj < 0.05] <- "DOWN"
+
+# Adding a new variable that labels only those genes that are DE (for plotting below)
+res$delabel <- NA
+res$delabel[res$diffexpressed != "NO"] <- res$X[res$diffexpressed != "NO"]
+
+# plot adding up all layers we have seen so far
+ggplot(data=res, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed, label=delabel)) +
+        geom_point() + theme_bw() + geom_text_repel(max.overlaps = 13) +
+        scale_color_manual(values=c("#4DBBD5FF", "black", "#DC0000B2")) + labs(y="-log10(P)", title="miRNA") + geom_vline(xintercept=c(-0.58, 0.58), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red") + theme(legend.title=element_blank())
+```

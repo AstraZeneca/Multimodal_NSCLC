@@ -1,0 +1,155 @@
+---
+title: "DEA"
+output: html_document
+---
+
+# Packages
+
+```{r}
+# Loading Required Packages
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(annotationDbi)
+library(org.Hs.eg.db)
+if (!require(ggrepel)) install.packages('ggrepel')
+if (!require(DESeq2)) BiocManager::install('DESeq2')
+if (!require(limma)) BiocManager::install('limma')
+if (!require(EDASeq)) BiocManager::install('EDASeq')
+if (!require(edgeR)) BiocManager::install('edgeR')
+if (!require(ggsci)) install.packages('ggsci')
+library(ggrepel)
+library(DESeq2)
+library(limma)
+library(EDASeq)
+library(edgeR)
+library(ggsci)
+```
+
+# LUAD Data
+
+```{r}
+# Downlaoding LUSC Count Data for Differential Expression Analysis (DEA)
+query <- GDCquery(project = "TCGA-LUAD",
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  workflow.type = "HTSeq - Counts")
+GDCdownload(query)
+LUAD_RNA <- GDCprepare(query)
+LUADMatrix <- assay(LUAD_RNA)
+
+#filtering out barcodes that are in my analysis
+load(file="~/desktop/Multimodal/Eligible_Barcodes/barcode_disease_mapping.Rdata")
+LUADMatrix <- as.data.frame(LUADMatrix)
+colnames(LUADMatrix) <- substr(colnames(LUADMatrix), 1, 19)
+LUADMatrix <- LUADMatrix[, !duplicated(colnames(LUADMatrix))]
+LUADMatrix_OnlyBarcodes <- LUADMatrix %>% dplyr::select(matches(barcode_disease_mapping$barcode))
+save(LUADMatrix_OnlyBarcodes,file="~/desktop/Multimodal/DEA/DEA_Files/LUAD_GeneExpression.rda")
+```
+
+# LUSC Data
+
+```{r}
+# Downlaoding LUAD Count Data for Differential Expression Analysis (DEA)
+query <- GDCquery(project = "TCGA-LUSC",
+                  data.category = "Transcriptome Profiling",
+                  data.type = "Gene Expression Quantification",
+                  workflow.type = "HTSeq - Counts")
+GDCdownload(query)
+LUSC_RNA <- GDCprepare(query)
+LUSCMatrix <- assay(LUSC_RNA)
+
+# Taking only used barcodes in this study
+load(file="~/desktop/Multimodal/barcode_disease_mapping.Rdata")
+LUSCMatrix <- as.data.frame(LUSCMatrix)
+colnames(LUSCMatrix) <- substr(colnames(LUSCMatrix), 1, 19)
+LUSCMatrix <- LUSCMatrix[, !duplicated(colnames(LUSCMatrix))]
+LUSCMatrix_OnlyBarcodes <- LUSCMatrix %>% dplyr::select(matches(barcode_disease_mapping$barcode))
+save(LUSCMatrix_OnlyBarcodes,file="~/desktop/Multimodal/DEA/DEA_Files/LUSC_GeneExpression.rda")
+```
+
+# Combining LUAD and LUSC Data
+
+```{r, echo=FALSE}
+# Loading Files From Above
+load(file = "~/desktop/Multimodal/DEA/DEA_Files/LUAD_GeneExpression.rda")
+load(file = "~/desktop/Multimodal/DEA/DEA_Files/LUSC_GeneExpression.rda")
+load(file='~/desktop/Multimodal/mRNA/RNASeq_Processed.RData') # Data Generated in Preprocessing
+load(file="~/desktop/Multimodal/DEA/DEA_Files/Barcodes/Bad_Barcodes.Rdata") #bad prognosis codes
+
+# Taking only those genes taken from previous preprocessing
+LUADMatrix_OnlyBarcodes <- rownames_to_column(LUADMatrix_OnlyBarcodes)
+LUSCMatrix_OnlyBarcodes <- rownames_to_column(LUSCMatrix_OnlyBarcodes)
+LUADMatrix_OnlyBarcodes <- merge(LUADMatrix_OnlyBarcodes, LUSCMatrix_OnlyBarcodes, by="rowname")
+LUADMatrix_OnlyBarcodes <- column_to_rownames(LUADMatrix_OnlyBarcodes)
+LUSC_RNA <- LUSC_RNA %>% dplyr::select(starts_with("E"))
+LUADMatrix_OnlyBarcodes <- as.data.frame(t(LUADMatrix_OnlyBarcodes)) %>% dplyr::select(all_of(colnames(LUSC_RNA)))
+
+# Setting Up Data
+dataFilt <- as.matrix(t(LUADMatrix_OnlyBarcodes))
+
+# Function that will help split data into bad and good prognosis barcodes
+outersect <- function(x, y) {
+  big.vec <- c(x, y)
+  duplicates <- big.vec[duplicated(big.vec)]
+  setdiff(big.vec, unique(duplicates)) }
+
+# Splitting Data into Bad and Good Prognosis
+BadPrognosis_Cluster <- Bad_Barcodes
+GoodPrognosis_Cluster <- outersect(BadPrognosis_Cluster, colnames(dataFilt))
+BadPrognosis <- subset(dataFilt, TRUE, c(BadPrognosis_Cluster))
+GoodPrognosis <- subset(dataFilt, TRUE, c(GoodPrognosis_Cluster))
+
+# Putting Data Together and Adding Labels for Group
+Final_Matrix <- cbind(GoodPrognosis, BadPrognosis)
+Good <- rep("GoodPrognosis", 405) #knowing there are 405 good prognosis pts and data is in order
+Bad <- rep("BadPrognosis", 327)
+col <- c(Good,Bad)
+col <- as.data.frame(col)
+colnames(col) <- "Condition"
+col$Condition <- as.factor(col$Condition)
+col$Condition <- relevel(col$Condition, "GoodPrognosis")
+```
+
+## Running DEA
+
+```{r}
+# differential expression analysis
+dds <- DESeqDataSetFromMatrix(countData = Final_Matrix, colData = col,
+design = ~ Condition) # look at differentially expressed based on good or bad prognosis
+dds <- DESeq(dds)
+res <- results(dds, pAdjustMethod = "fdr") #adjusting based on false discovery rate
+resultsNames(dds)
+
+# Converting From Ensembl to Gene Symbols for Genes that have them
+res$symbol <- mapIds(org.Hs.eg.db, keys=row.names(res), column="SYMBOL", keytype="ENSEMBL",
+                     multiVals="first")
+res <- res[order(res$padj),] # ordering by p-value
+res <- as.data.frame(res)
+write.csv(as.data.frame(res), file="~/desktop/Multimodal/DEA/DEA_Results/MRNA_results.csv") #Saving Results from DEA Analysis
+```
+
+# VOLCANO PLOT CODE
+
+```{r}
+res <- read.csv(file="~/desktop/Multimodal/DEA/DEA_Results/MRNA_results.csv") # Re-loading data
+
+# Adding new columns to see which genes are significantly differentially expressed
+res$diffexpressed <- "NO" # Default
+# if log2Foldchange > 0.58 and pvalue < 0.05, set as "UP" 
+res$diffexpressed[res$log2FoldChange > 0.58 & res$padj < 0.05] <- "UP"
+# if log2Foldchange < -0.58 and pvalue < 0.05, set as "DOWN"
+res$diffexpressed[res$log2FoldChange < -0.58 & res$padj < 0.05] <- "DOWN"
+
+# Adding a new variable that labels only those genes that are DE (for plotting below)
+res$delabel <- NA
+res$delabel[res$diffexpressed != "NO"] <- res$symbol[res$diffexpressed != "NO"]
+
+# plot adding up all layers we have seen so far
+ggplot(data=res, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed, label=delabel)) +
+        geom_point() + theme_bw() + geom_text_repel(max.overlaps = 13) +
+        scale_color_manual(values=c("#4DBBD5FF", "black", "#DC0000B2")) + labs(y="-log10(P)", title="mRNA") + geom_vline(xintercept=c(-0.58, 0.58), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red") + theme(legend.title=element_blank())
+```

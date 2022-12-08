@@ -1,0 +1,445 @@
+---
+title: "Post-Processing Script"
+output: html_notebook
+---
+
+# Packages
+
+```{r}
+library(dplyr)
+library(ggplot2)
+if (!require(RColorBrewer)) install.packages("RColorBrewer")
+if (!require(tidytext)) install.packages("tidytext")
+if (!require(ggsci)) install.packages("ggsci")
+if (!require(tidyr)) install.packages("tidyr")
+if (!require(ggh4x)) install.packages("ggh4x")
+if (!require(pander)) install.packages("pander")
+library(pander)
+library(tidyr)
+library(tidytext)
+library(ggsci)
+library(ggh4x)
+library(RColorBrewer)
+```
+
+# Functions for Analyzing the Data
+
+```{r}
+# 1. Standard Error Function
+std <- function(x) sd(x)/sqrt(length(x))
+
+# 2. Gathering Function
+processing_overall_results <- function(results_df) {
+  
+  #Averaging Across Folds for Both LUAD/LUSC, and LUAD and LUSC Individually
+  overall_plot_lung  <- results_df %>%
+  group_by(Data_Types, Dimension_Reduction) %>%
+  summarise(C_Index = mean(Cindex_Test), sd=std(Cindex_Test),
+            C_Index_LUAD = mean(Cindex_LUAD), sd_LUAD=std(Cindex_LUAD),
+            C_Index_LUSC  = mean(Cindex_LUSC), sd_LUSC=std(Cindex_LUSC))
+
+  #Creating Overall Vectors and Labels To Create a Dataframe
+  sd <- c(overall_plot_lung$sd_LUSC, overall_plot_lung$sd_LUAD)
+  Cindex <- c(overall_plot_lung$C_Index_LUSC, overall_plot_lung$C_Index_LUAD)
+  Data_Types <- c(overall_plot_lung$Data_Types, overall_plot_lung$Data_Types)
+  Dimension_Reduction <- overall_plot_lung$Dimension_Reduction
+  LUSC_lab <- rep("LUSC", nrow(overall_plot_lung))
+  LUAD_lab <- rep("LUAD", nrow(overall_plot_lung))
+  Lung_Label <- c(LUSC_lab, LUAD_lab)
+
+  # Forming Overall DF
+  gathered_plot <- as.data.frame(cbind(sd, Lung_Label))
+  gathered_plot <- as.data.frame(cbind(gathered_plot, Cindex))
+  gathered_plot <- as.data.frame(cbind(gathered_plot, Data_Types))
+  gathered_plot <- as.data.frame(cbind(gathered_plot, Dimension_Reduction))
+  gathered_plot$sd <- as.numeric(gathered_plot$sd)
+
+  # Changing the Labels for Plot (For Space Purposes)
+  for (i in 1:nrow(gathered_plot)) {
+  if (gathered_plot$Data_Types[i]=="Gene Expression") { gathered_plot$Data_Types[i] <- "mRNA" }
+  }
+
+  # Rounding the Data Results
+  gathered_plot$Cindex <- round(gathered_plot$Cindex,2)
+  
+  #Processed Data Frame
+  return(gathered_plot)
+}
+```
+
+# Overall Performance Figure by Individual and Multi-Modal Modalities and LUSC/LUAD
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+#Reading in File
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+# Using Preprocessing Function From Above
+processed_df <- processing_overall_results(overall_df)
+
+# Choosing the Modalities to Examine and Rounding the Data
+processed_df <- processed_df %>% filter(Data_Types=="Multimodal (Early)" | Data_Types=="Clinical" | Data_Types=="miRNA"| Data_Types=="mRNA" | Data_Types=="Methylation"| Data_Types=="LNC RNAs")
+processed_df$Data_Types <- as.factor(processed_df$Data_Types)
+levels(processed_df$Data_Types)[length(levels(processed_df$Data_Types))] <- "Multimodal"
+
+#Final Plotting Figure
+Final_Plot <- processed_df %>% 
+  ggplot(aes(x=reorder_within(Data_Types,Cindex,Lung_Label), y=Cindex,color=Lung_Label)) + geom_point()  + facet_wrap(~Lung_Label,scales = "free_x") + geom_pointrange(aes(ymin=Cindex-sd,ymax=Cindex+sd)) + scale_color_npg() + labs(x=NULL, y="Concordance Index", title=NULL) + scale_x_reordered() + theme_bw() + theme(axis.text.x=element_text(angle=90),legend.position = "none")
+Final_Plot
+
+#Saving Plot in Same Folder if Desired
+#ggsave(Final_Plot, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/IndividualvMultimodal.png"), width = 16, height = 9, dpi = 100)
+```
+
+# 2-Omics Versus Singular Performance
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+# File Parameters
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+
+#Reading in File
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+#Preprocessing Function
+processed_df <- processing_overall_results(overall_df)
+
+# Two-Omics
+processed_df_late <- processed_df %>% filter(Data_Types=="Clinical" | Data_Types=="miRNA"| Data_Types=="mRNA" | Data_Types=="Methylation"| Data_Types=="LNC RNAs" #| Data_Types=="Multimodal (Late)" |
+                                             )
+processed_df_early <- processed_df %>% filter(Dimension_Reduction == "One AE") %>% filter(Data_Types=="Gene-Clin" | Data_Types=="miRNA-Clin" | Data_Types=="Meth-Clin" | Data_Types=="LNC-Clin" | Data_Types=="Gene-LNC" | Data_Types=="Meth-Gene" | Data_Types=="Meth-LNC" | Data_Types=="LNC-miRNA" | Data_Types=="Meth-miRNA" | Data_Types=="Gene-miRNA" #| Data_Types == "Multimodal (Early)"
+                                                                                          )
+processed_df <- rbind(processed_df_late, processed_df_early)
+
+#Final Plotting Figure
+Final_Plot <- processed_df %>% 
+  ggplot(aes(x=reorder_within(Data_Types,Cindex,Lung_Label), y=Cindex,color=Lung_Label)) + geom_point()  + facet_wrap(~Lung_Label,scales = "free_x") + geom_pointrange(aes(ymin=Cindex-sd,ymax=Cindex+sd)) + scale_color_npg() + labs(x=NULL, y="Concordance Index", title=NULL) + scale_x_reordered() + theme_bw() + theme(axis.text.x=element_text(angle=90),legend.position = "none")
+Final_Plot
+
+#Saving Plot in Same Folder (If Desired)
+#ggsave(Final_Plot, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/TwoOmicsvSingle_Plot.png"), width = 16, height = 9, dpi = 100)
+```
+
+# List of Best Combinations Only
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+# File Parameters
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+
+#Reading in File
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+#Preprocessing Function
+processed_df <- processing_overall_results(overall_df)
+
+# Two-Omics
+processed_df2 <- processed_df %>% filter(Dimension_Reduction=="One AE")
+processed_df_LUSC<- processed_df2 %>% filter(Lung_Label=="LUSC") %>% filter(Data_Types=="Multimodal (Early)" | Data_Types=="LNC-Clin" | Data_Types=="Gene-miRNA-LNC-Clin" | Data_Types==	"Meth-Gene-Clin")
+processed_df_LUAD<-processed_df2 %>% filter(Lung_Label=="LUAD") %>% filter(Data_Types=="LNC-Clin" | Data_Types=="Gene-miRNA-Clin" | Data_Types==	"Gene-LNC" | Data_Types=="LNC-miRNA" | Data_Types== "Meth-miRNA-Clin")
+meth_clin_lnc<-processed_df %>%filter(Lung_Label=="LUSC") %>% filter(Data_Types=="Meth-Clin-LNC")
+processed_df <- rbind(processed_df_LUSC, processed_df_LUAD,meth_clin_lnc)
+
+#Final Plotting Figure
+Final_Plot <- processed_df %>% 
+  ggplot(aes(x=reorder_within(Data_Types,Cindex,Lung_Label), y=Cindex,color=Lung_Label)) + geom_point()  + facet_wrap(~Lung_Label,scales = "free_x") + geom_pointrange(aes(ymin=Cindex-sd,ymax=Cindex+sd)) + scale_color_npg() + labs(x=NULL, y="Concordance Index", title=NULL) + scale_x_reordered() + theme_bw() + theme(axis.text.x=element_text(angle=90),legend.position = "none")
+Final_Plot
+
+#Saving Plot in Same Folder (If Desired)
+#ggsave(Final_Plot, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/BestCombinations.png"), width = 16, height = 9, dpi = 100)
+```
+
+# Looking at lncRNA Data Specifically
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+# File Parameters
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+
+#Reading in File
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+#Preprocessing Function
+processed_df <- processing_overall_results(overall_df)
+
+# Taking Some Late But mostly Early Integration Data
+processed_df_late <- processed_df %>% filter(Data_Types=="LNC RNAs" | Data_Types=="Multimodal (Late")
+processed_early <- processed_df %>% filter(Dimension_Reduction=="One AE")
+processed_df2 <- rbind(processed_df_late, processed_early)
+
+# Dataframes for lncRNAs
+processed_df2 <- processed_df2 %>% filter(grepl("LNC",Data_Types))
+
+#Final Plotting Figure
+Final_Plot <- processed_df2 %>% 
+  ggplot(aes(x=reorder_within(Data_Types,Cindex,Lung_Label), y=Cindex,color=Lung_Label)) + geom_point()  + facet_wrap(~Lung_Label,scales = "free_x") + geom_pointrange(aes(ymin=Cindex-sd,ymax=Cindex+sd)) + scale_color_npg() + labs(x=NULL, y="Concordance Index", title=NULL) + scale_x_reordered() + theme_bw() + theme(axis.text.x=element_text(angle=90),legend.position = "none")
+Final_Plot
+
+#Saving Plot in Same Folder (If Desired)
+#ggsave(Final_Plot, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/BestCombinations.png"), width = 16, height = 9, dpi = 100)
+```
+
+#Loading Elastic Net Feature Importance Plot
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+#Reading in File
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/Elastic_Feat_Importance.csv"))
+
+# Only Taking Relevant Variables From a Single Run
+overall_df2 <- overall_df %>% filter(Coefficients != 0 & Run_Number=="Run5") # Run Number
+#overall_df2$Coefficients <- abs(overall_df2$Coefficients) # Can Choose to Only Take Abs Value
+
+# Renaming Variables For Plot
+overall_df2$Variable <- as.factor(overall_df2$Variable)
+levels(overall_df2$Variable)[3] <- "Pathological Stage"
+levels(overall_df2$Variable)[2] <- "Staging Lymph Nodes"
+levels(overall_df2$Variable)[4] <- "Staging Tumor"
+levels(overall_df2$Variable)[length(overall_df2$Variable)] <- "Prior Malignancy"
+
+# Visualizing
+Elastic_Feat_Importance <- overall_df2 %>% ggplot(aes(x=reorder(Variable, -Coefficients), y=Coefficients)) + geom_col(fill="#4DBBD5FF", color="black") + labs(title=NULL, x=NULL, y="ElasticNet Coefficient Values") + theme_bw() + theme(axis.text.x = element_text(angle = 90)) + scale_color_npg()
+Elastic_Feat_Importance 
+
+#Saving Plot in Same Folder
+#ggsave(Elastic_Feat_Importance, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/Elastic_Feat_Importance.png"), width = 16, height = 9, dpi = 100)
+```
+#Downloading PCA Data
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+#Reading in File
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+overall_df <- load(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/PCA_Visualization_List.Rdata"))
+
+#Processing PCA List and Taking One Run
+overall_df3 <- bind_rows(total_PCA_list)
+overall_df3 <- overall_df3 %>% filter(Run_Number=="Run4") # Can adjust if desired
+
+# Filtering Undesired Data
+overall_df3 <- overall_df3 %>% filter(Modality!="Multimodal (with Selection)" & Modality!="Multimodal (with Clinical)" )
+
+# Designing Layout for PCA Plot with Different Modalities
+design <- matrix(c(4,2,5,3,1,6),2,3)
+layout(design)
+
+# Plotting - Plot too big to display in R so must save it first below
+PCA_Facet_Plot <- overall_df3 %>% ggplot(aes(x=PC1, y=PC2,col = factor(totalvitalstatus))) + geom_point(size=3.5) + scale_colour_manual(name = "Survival Status", values = c("#EE3377", "dark red", "cadetblue1", "blue4")) + facet_manual(vars(factor(Modality)), design=design) + labs(title=NULL) + theme_bw() + theme(text = element_text(size = 30)) 
+PCA_Facet_Plot
+
+#Saving Plot in Same Folder
+#ggsave(PCA_Facet_Plot, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/Overall_PCA_Figure.png"), width = 18, height = 18, dpi = 100)
+```
+# Comparing Early and Late Integration for Multimodal Data
+
+```{r}
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+#Reading in File
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+# Using Preprocessing Function From Above
+processed_df <- processing_overall_results(overall_df)
+
+# Choosing Data Modalities
+integration_plot <- processed_df %>% filter(Data_Types=="Multimodal (Late)" | Data_Types=="Multimodal (Early)")
+integration_plot$Cindex <- round(integration_plot$Cindex,2)
+
+# Table
+pander(integration_plot)
+
+#Final Plotting Figure
+Final_Plot <- integration_plot %>% 
+  ggplot(aes(x=Lung_Label, y=Cindex, fill=Data_Types)) + geom_col(position="dodge")  + geom_errorbar(aes(ymin=Cindex-sd,ymax=Cindex+sd),position = position_dodge()) + scale_fill_npg(name = "Autoencoder Integration", labels=c("Early Integration","Late Integration")) + labs(x=NULL, y="Concordance Index", title=NULL) + theme_bw() + theme(axis.text.x =element_text(size=10))
+Final_Plot
+
+#Saving Plot in Same Folder
+#ggsave(Final_Plot, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/EarlyvLateIntegration_Multimodal.png"), width = 16, height = 9, dpi = 100)
+```
+
+# Performance by Different Data Dimensionality Reduction Techniques
+#1. Feature Selection+Denoising Autoencoder 2. Denoising Autoencoder 3. Feature Selection 4. PCA
+
+```{r}
+### 1. Feature Selection + Autoencoder
+
+#Setting Initial Values (With Chosen Parameters) to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+percentage_zeros <- 0.3
+
+#Reading in File
+#Reading in File
+filename <- paste0("CV_", function1, percentage_zeros,  "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+# Using Preprocessing Function From Above
+processed_df <- processing_overall_results(overall_df)
+
+# Defining Dimensionality Reduction
+processed_df <- processed_df %>% mutate(Dimensionality_Reduction = "Feature Selection+AE")
+
+### 2. Linear Feature Selection
+
+#Reading in File
+overall_df <- read.csv("~/desktop/Multimodal/MultimodalPipeline_Results_Post/CV_LFS/overall_results_run.csv")
+
+# Using Preprocessing Function From Above
+feature_selection <- processing_overall_results(overall_df)
+
+# Defining Dimensionality Reduction
+feature_selection <- feature_selection %>% mutate(Dimensionality_Reduction = "Feature Selection")
+
+# Joining to One DF
+processed_df_final <- as.data.frame(rbind(processed_df, feature_selection))
+
+### 3. PCA
+
+#Reading in File
+overall_df <- read.csv("~/desktop/Multimodal/MultimodalPipeline_Results_Post/CV_PCA/overall_results_run.csv")
+
+# Using Preprocessing Function From Above
+processed_df <- processing_overall_results(overall_df)
+
+# Defining Dimensionality Reduction
+PCA <- processed_df %>% mutate(Dimensionality_Reduction = "PCA")
+
+# Joining to One DF
+processed_df_final <- as.data.frame(rbind(processed_df_final, PCA))
+
+### 4. Only Autoencoder
+
+# Only Autoencoder Data
+AE_DF <- read.csv("~/desktop/Multimodal/MultimodalPipeline_Results_Post/CV_sigmoid0.3Zeros_OnlyAE_denoising_zeros/overall_results_run.csv")
+
+# Using Preprocessing Function From Above
+AE_DF <- processing_overall_results(AE_DF)
+
+# Mutating New Column and Adding to DF
+AE_DF <- AE_DF %>% mutate(Dimensionality_Reduction = "Autoencoder")
+Dim_Plot_Final <- as.data.frame(rbind(processed_df_final, AE_DF))
+
+# Renaming Full Variables
+for (i in 1:nrow(Dim_Plot_Final)) {
+    if (Dim_Plot_Final$Data_Types[i]=="Meth-Gene-LNC-miRNA-Full") {
+    Dim_Plot_Final$Data_Types[i] <- "Full AE" }
+}
+
+# Rounding Data
+Dim_Plot_Final$Cindex <- round(Dim_Plot_Final$Cindex, 2)
+
+# Modalities for Plotting
+Dim_Plot_Final2<-Dim_Plot_Final %>% filter(Data_Types=="Multimodal"|Data_Types=="Full AE" |Data_Types=="FullAE" | Data_Types=="Multimodal (Early)" | Data_Types=="Multimodal (Late)")
+
+#Reorder Factor Variable
+Dim_Plot_Final2$Dimensionality_Reduction <- as.factor(Dim_Plot_Final2$Dimensionality_Reduction)
+Dim_Plot_Final2$Dimensionality_Reduction<-factor(Dim_Plot_Final2$Dimensionality_Reduction, levels=c('Autoencoder (No Preprocess)', 'PCA','Autoencoder','Feature Selection',"Feature Selection+AE"))
+
+# Renaming to Early and Late Integration for Plotting
+for (i in 1:nrow(Dim_Plot_Final2)) {
+    if (Dim_Plot_Final2$Data_Types[i]=="Full AE" | Dim_Plot_Final2$Data_Types[i]=="FullAE") {
+    Dim_Plot_Final2$Data_Types[i] <- "Multimodal (Early)" }
+      if (Dim_Plot_Final2$Data_Types[i]=="Multimodal") {
+    Dim_Plot_Final2$Data_Types[i] <- "Multimodal (Late)" }
+}
+
+#Final Plotting Figure
+Dim_Plot_Final2 %>% 
+  ggplot(aes(x=Data_Types, y=Cindex, color=Dimensionality_Reduction)) + geom_point(position=position_dodge(width=0.5)) + geom_pointrange(aes(ymin=Cindex-sd,ymax=Cindex+sd),position=position_dodge(width=0.5)) + facet_wrap(~Lung_Label)+ labs(x="Multimodal Modality", y="Concordance Index", title=NULL) + theme_bw() + scale_color_npg() + theme(axis.title.x = element_blank(),legend.position="top",legend.title =element_blank())
+
+#Saving Plot in Same Folder
+#ggsave(Dim_Plot_Final2, filename=paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/Dimensionality_Reduction_Comparison.png"), width = 16, height = 9, dpi = 100)
+```
+
+## Comparing All Modality Combinations for Early and Late Integration (Table Output)
+
+```{r}
+#Setting Initial Values to Read in Files
+autoencoder_type <- "denoising_zeros"
+function1 <- "sigmoid"
+zero <- 0.3
+
+#Reading in Files
+filename <- paste0("CV_", function1,zero, "Zeros_", "AllCombinations_EarlyandLateIntegration_", autoencoder_type)
+overall_df <- read.csv(paste0("~/desktop/Multimodal/MultimodalPipeline_Results_Post/", filename, "/overall_results_run.csv"))
+
+# Getting Rid of Chosen Modalities
+#overall_df <- overall_df %>% filter(Data_Types != "Clinical" & Data_Types != "Gene Expression" & Data_Types != "LNC RNAs" & Data_Types != "Methylation" & Data_Types != "miRNA")
+
+# Accidentally Made Order Different for Early and Later Integration Scripts so Need to Match Up
+for (i in 1:nrow(overall_df)) {
+  if (overall_df$Data_Types[i]=="Gene-LNC-Clin-miRNA") {
+  overall_df$Data_Types[i] <- "Gene-miRNA-LNC-Clin" }
+  if (overall_df$Data_Types[i]=="LNC-miRNA-Clin") {
+  overall_df$Data_Types[i] <- "miRNA-LNC-Clin" }
+  if (overall_df$Data_Types[i]=="Meth-Clin-LNC") {
+  overall_df$Data_Types[i] <- "Meth-LNC-Clin" }
+  if (overall_df$Data_Types[i]=="Meth-Clin-miRNA") {
+  overall_df$Data_Types[i] <- "Meth-miRNA-Clin" }
+  if (overall_df$Data_Types[i]=="Multimodal") {
+  overall_df$Data_Types[i] <- "Meth-Gene-LNC-miRNA-Clin" }
+  if (overall_df$Data_Types[i]=="Multi (No Clin)") {
+  overall_df$Data_Types[i] <- "Meth-Gene-LNC-miRNA" }
+  if (overall_df$Data_Types[i]=="Meth-LNC-miRNA-Clin") {
+  overall_df$Data_Types[i] <- "Meth-LNC-Clin-miRNA" }
+}
+
+ #Reusing Function Data Since This Case is Slightly Different
+  overall_plot_lung  <- overall_df %>%
+  group_by(Data_Types, Dimension_Reduction) %>%
+  summarise(C_Index = mean(Cindex_Test), sd=std(Cindex_Test),
+            C_Index_LUAD = mean(Cindex_LUAD), sd_LUAD=std(Cindex_LUAD),
+            C_Index_LUSC  = mean(Cindex_LUSC), sd_LUSC=std(Cindex_LUSC))
+
+  #Creating Overall Vectors and Labels To Create a Dataframe
+  sd <- c(overall_plot_lung$sd_LUSC, overall_plot_lung$sd_LUAD)
+  Cindex <- c(overall_plot_lung$C_Index_LUSC, overall_plot_lung$C_Index_LUAD)
+  Dimension_Reduction <- overall_plot_lung$Dimension_Reduction
+  Data_Types <- c(overall_plot_lung$Data_Types, overall_plot_lung$Data_Types)
+  LUSC_lab <- rep("LUSC", nrow(overall_plot_lung))
+  LUAD_lab <- rep("LUAD", nrow(overall_plot_lung))
+  Lung_Label <- c(LUSC_lab, LUAD_lab)
+
+  # Forming Overall DF
+  gathered_plot <- as.data.frame(cbind(sd, Lung_Label))
+  gathered_plot <- as.data.frame(cbind(gathered_plot, Cindex))
+  gathered_plot <- as.data.frame(cbind(gathered_plot, Data_Types))
+  gathered_plot <- as.data.frame(cbind(gathered_plot, Dimension_Reduction))
+  gathered_plot$sd <- as.numeric(gathered_plot$sd)
+
+  # Rounding Data
+  gathered_plot$Cindex <- round(gathered_plot$Cindex,2)
+
+  # Table of All Results
+  View(gathered_plot)
+```

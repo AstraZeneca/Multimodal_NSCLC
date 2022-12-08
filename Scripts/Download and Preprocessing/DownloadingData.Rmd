@@ -1,0 +1,150 @@
+---
+title: "DownloadingData"
+author: "Jacob Ellen"
+date: "6/1/2022"
+output: html_document
+---
+
+# Loading and Installing Necessary Packages (If Needed)
+
+```{r}
+if (!require('BiocManager', quietly=T)) install.packages('BiocManager')
+library(BiocManager)
+if (!require('SummarizedExperiment')) BiocManager::install('SummarizedExperiment')
+if (!require('TCGAbiolinks')) BiocManager::install('TCGAbiolinks')
+if (!require('tidyverse')) install.packages('tidyverse')
+if (!require('dplyr')) install.packages('dplyr')
+if (!require('AnnotationDbi')) BiocManager::install('AnnotationDbi')
+if (!require('GenomicFeatures')) BiocManager::install('GenomicFeatures')
+if (!require('sesameData')) BiocManager::install('sesameData')
+if (!require('sesame')) BiocManager::install('sesame')
+if (!require('tibble')) install.packages('tibble')
+if (!require('stringr')) install.packages('stringr')
+if (!require('data.table')) install.packages('data.table')
+if (!require('readr')) install.packages('readr')
+
+# Making sure libraries are loaded
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+library(tidyverse)
+library(dplyr)
+library(AnnotationDbi)
+library(GenomicFeatures)
+library(sesameData)
+library(sesame)
+library(tibble)
+library(stringr)
+library(data.table)
+library(readr)
+```
+
+### Downloading the Data - RNA Seq Data
+
+```{r}
+# Note: TCGA database goes through constant updates that can change the way the data is downloaded, so reach out to jgellen4@gmail.com if there any issues below and the code needs to be updated.
+
+#LUAD Download
+query_LUAD <- GDCquery(project = "TCGA-LUAD", 
+                  data.category = "Transcriptome Profiling", 
+                  data.type = "Gene Expression Quantification", 
+                  workflow.type = "HTSeq - FPKM-UQ")
+GDCdownload(query_LUAD)
+data_LUAD <- GDCprepare(query = query_LUAD)
+
+LUADclin <- as.data.frame(data.table(as.data.frame(colData(data_LUAD))))
+LUAD_RNAseq <- as.matrix(data.table(t(assay(data_LUAD,withDimnames=TRUE))))
+
+# Saving LUAD RNA and Clinical Data
+save(LUAD_RNAseq, file="~/desktop/Multimodal/mRNA/LUAD_RNASeq_Harmonized.RData")
+save(LUADclin, file="~/desktop/Multimodal/Clinical/LUAD_Clin_Harm.RData")
+
+#LUSC Download
+query_LUSC <- GDCquery(project = "TCGA-LUSC", 
+                  data.category = "Transcriptome Profiling", 
+                  data.type = "Gene Expression Quantification", 
+                  workflow.type = "HTSeq - FPKM-UQ")
+GDCdownload(query_LUSC)
+data_LUSC <- GDCprepare(query_LUSC)
+
+LUSCclin <- as.data.frame(data.table(as.data.frame(colData(data_LUSC))))
+LUSC_RNAseq <- as.matrix(data.table(t(assay(data_LUSC,withDimnames=TRUE))))
+
+# Saving LUSC RNA and Clinical Data
+save(LUSC_RNAseq, file="~/desktop/Multimodal/mRNA/LUSC_RNASeq_Harmonized.RData")
+save(LUSCclin, file="~/desktop/Multimodal/Clinical/LUSC_Clin_Harm.RData")
+```
+
+### Downloading the Data - DNA Methylation
+
+```{r}
+# LUSC Methylation Data
+query_met_LUSC <- GDCquery(project= "TCGA-LUSC", 
+                           data.category = "DNA Methylation", data.type = "Methylation Beta Value",
+                           platform = "Illumina Human Methylation 450")
+GDCdownload(query_met_LUSC)
+data.lusc <- GDCprepare(query_met_LUSC) #If it gives an error, go download the updated TCGAbiolinks version on Github: BiocManager::install("BioinformaticsFMRP/TCGAbiolinks")
+LUSCclin_meth <- as.data.frame(data.table(as.data.frame(colData(data.lusc))))
+LUSC_meth <- as.matrix(data.table(t(assay(data.lusc,withDimnames=TRUE))))
+
+#Saving LUSC Methylation and Clinical Data
+save(LUSC_meth, file = "~/desktop/Multimodal/Methylation/LUSC_Methylation.RData")
+save(LUSCclin_meth, file = "~/desktop/Multimodal/Methylation/LUSC_Methylation_Clin.RData")
+
+# LUAD Methylation Data
+query_met_LUAD <- GDCquery(project= "TCGA-LUAD", 
+                           data.category = "DNA Methylation", data.type = "Methylation Beta Value",
+                           platform = "Illumina Human Methylation 450")
+GDCdownload(query_met_LUAD)
+data.luad <- TCGAbiolinks::GDCprepare(query_met_LUAD)
+LUADclin_meth <- as.data.frame(data.table(as.data.frame(colData(data.luad))))
+LUAD_meth <- as.matrix(data.table(t(assay(data.luad,withDimnames=TRUE))))
+
+#Saving LUAD Methylation and Clinical Data
+save(LUAD_meth, file = "~/desktop/Multimodal/Methylation/LUAD_Methylation.RData")
+save(LUADclin_meth, file = "~/desktop/Multimodal/Methylation/LUAD_Methylation_Clin.RData")
+```
+
+### Downloading the Data - miRNA Data
+
+```{r}
+#Downloading LUSC miRNA Data
+query_mirna_lusc <- GDCquery(project = "TCGA-LUSC",
+                         data.category = "Transcriptome Profiling",
+                         data.type = "miRNA Expression Quantification",
+                         experimental.strategy = "miRNA-Seq")
+GDCdownload(query_mirna_lusc)
+data <- GDCprepare(query_mirna_lusc)
+
+# Pre-processing LUSC miRNA Data
+LUSC_miRNA <- as.matrix(assay(SummarizedExperiment(data)))
+LUSC_miRNA <- as.data.frame(LUSC_miRNA)
+LUSC_miRNA <- column_to_rownames(LUSC_miRNA, "miRNA_ID")
+LUSC_miRNA <- LUSC_miRNA %>% dplyr::select(contains('per_million'))
+LUSC_miRNA  <- as.matrix(LUSC_miRNA)
+LUSC_miRNA <- t(LUSC_miRNA)
+class(LUSC_miRNA) <- "numeric"
+
+# Saving LUSC miRNA Data
+save(LUSC_miRNA, file="~/desktop/Multimodal/miRNA/LUSC_miRNA.RData")
+
+# Downloading LUAD miRNA Data
+query_mirna_luad <- GDCquery(project = "TCGA-LUAD",
+                         data.category = "Transcriptome Profiling",
+                         data.type = "miRNA Expression Quantification",
+                         experimental.strategy = "miRNA-Seq"
+                          )
+GDCdownload(query_mirna_luad)
+data <- GDCprepare(query_mirna_luad)
+
+# Pre-processing LUAD miRNA Data
+LUAD_miRNA <- as.matrix(assay(SummarizedExperiment(data)))
+LUAD_miRNA <- as.data.frame(LUAD_miRNA)
+LUAD_miRNA <- column_to_rownames(LUAD_miRNA, "miRNA_ID")
+LUAD_miRNA <- LUAD_miRNA %>% dplyr::select(contains('per_million'))
+LUAD_miRNA  <- as.matrix(LUAD_miRNA)
+LUAD_miRNA <- t(LUAD_miRNA)
+class(LUAD_miRNA) <- "numeric"
+
+# Saving LUAD miRNA Data
+save(LUAD_miRNA, file="~/desktop/Multimodal/miRNA/LUAD_miRNA.RData")
+```

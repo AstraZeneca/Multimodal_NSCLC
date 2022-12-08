@@ -1,0 +1,120 @@
+---
+title: "DEA_LNCRNA"
+output: html_document
+---
+
+# Packages
+
+```{r}
+# Loading Required Packages
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(org.Hs.eg.db)
+if (!require(ggrepel)) install.packages('ggrepel')
+if (!require(DESeq2)) BiocManager::install('DESeq2')
+if (!require(limma)) BiocManager::install('limma')
+if (!require(EDASeq)) BiocManager::install('EDASeq')
+if (!require(edgeR)) BiocManager::install('edgeR')
+if (!require(ggsci)) install.packages('ggsci')
+library(ggrepel)
+library(DESeq2)
+library(limma)
+library(EDASeq)
+library(edgeR)
+library(ggsci)
+```
+
+# Processing LNC Data
+
+```{r}
+# Loading in DataFrames Downloaded in 'DEA_mRNA File'
+load(file = "~/desktop/Multimodal/DEA/DEA_Files/LUAD_GeneExpression.rda")
+load(file = "~/desktop/Multimodal/DEA/DEA_Files/LUSC_GeneExpression.rda")
+load(file='~/desktop/Multimodal/LNCRNAS/LUSC_LNCS_process.RData') # Preprocessed LNCs File
+
+# Taking only Preprocessed LNCs 
+LUADMatrix_OnlyBarcodes <- rownames_to_column(LUADMatrix_OnlyBarcodes)
+LUSCMatrix_OnlyBarcodes <- rownames_to_column(LUSCMatrix_OnlyBarcodes)
+LUADMatrix_OnlyBarcodes <- merge(LUADMatrix_OnlyBarcodes, LUSCMatrix_OnlyBarcodes, by="rowname")
+LUADMatrix_OnlyBarcodes <- column_to_rownames(LUADMatrix_OnlyBarcodes)
+LUSC_lncRNA <- LUSC_lncRNA %>% dplyr::select(starts_with("E"))
+LNCMatrix <- as.data.frame(t(LUADMatrix_OnlyBarcodes)) %>% dplyr::select(all_of(colnames(LUSC_lncRNA)))
+save(LNCMatrix, file = "~/desktop/Multimodal/DEA/DEA_Files/LNCRNAS_DEA.rda") # Saving Result
+```
+
+#COMBINING
+
+```{r, echo=FALSE}
+# Loading Data
+load(file = "~/desktop/Multimodal/DEA/DEA_Files/LNCRNAS_DEA.rda")
+load(file="~/desktop/Multimodal/DEA/DEA_Files/Barcodes/Bad_Barcodes.Rdata")
+
+# Setting Up Data
+dataFilt <- as.matrix(t(LNCMatrix))
+
+# Function that will help split data into bad and good prognosis barcodes
+outersect <- function(x, y) {
+  big.vec <- c(x, y)
+  duplicates <- big.vec[duplicated(big.vec)]
+  setdiff(big.vec, unique(duplicates)) }
+
+# Splitting Data into Bad and Good Prognosis
+BadPrognosis_Cluster <- Bad_Barcodes
+GoodPrognosis_Cluster <- outersect(BadPrognosis_Cluster, colnames(dataFilt))
+BadPrognosis <- subset(dataFilt, TRUE, c(BadPrognosis_Cluster))
+GoodPrognosis <- subset(dataFilt, TRUE, c(GoodPrognosis_Cluster))
+
+# Putting Data Together and Adding Labels for Group
+Final_Matrix <- cbind(GoodPrognosis, BadPrognosis)
+Good <- rep("GoodPrognosis", 405) #knowing there are 405 good prognosis pts and data is in order
+Bad <- rep("BadPrognosis", 327)
+col <- c(Good,Bad)
+col <- as.data.frame(col)
+colnames(col) <- "Condition"
+col$Condition <- as.factor(col$Condition)
+col$Condition <- relevel(col$Condition, "GoodPrognosis")
+```
+
+## Running DEA
+
+```{r}
+# differential expression analysis
+dds <- DESeqDataSetFromMatrix(countData = Final_Matrix, colData = col,
+design = ~ Condition) # look at differentially expressed based on good or bad prognosis
+dds <- DESeq(dds)
+res <- results(dds, pAdjustMethod = "fdr") #adjusting based on false discovery rate
+resultsNames(dds)
+
+# Converting From Ensembl to Gene Symbols for Genes that have them (many LNCs don't)
+res$symbol <- mapIds(org.Hs.eg.db, keys=row.names(res), column="SYMBOL", keytype="ENSEMBL",
+                     multiVals="first")
+res <- res[order(res$padj),] # ordering by p-value
+res <- as.data.frame(res)
+write.csv(as.data.frame(res), file="~/desktop/Multimodal/DEA/DEA_Results/LNCRNA_results.csv") #Saving Results from DEA Analysis
+```
+
+# VOLCANO PLOT CODE
+
+```{r}
+res <- read.csv(file="~/desktop/Multimodal/DEA/DEA_Results/LNCRNA_results.csv") # Re-loading data
+
+# Adding new columns to see which genes are significantly differentially expressed
+res$diffexpressed <- "NO" # Default
+# if log2Foldchange > 0.58 and pvalue < 0.05, set as "UP" 
+res$diffexpressed[res$log2FoldChange > 0.58 & res$padj < 0.05] <- "UP"
+# if log2Foldchange < -0.58 and pvalue < 0.05, set as "DOWN"
+res$diffexpressed[res$log2FoldChange < -0.58 & res$padj < 0.05] <- "DOWN"
+
+# Adding a new variable that labels only those genes that are DE (for plotting below)
+res$delabel <- NA
+res$delabel[res$diffexpressed != "NO"] <- res$symbol[res$diffexpressed != "NO"]
+
+# plot adding up all layers we have seen so far
+ggplot(data=res, aes(x=log2FoldChange, y=-log10(padj), col=diffexpressed, label=delabel)) +
+        geom_point() + theme_bw() + geom_text_repel(max.overlaps = 13) +
+        scale_color_manual(values=c("#4DBBD5FF", "black", "#DC0000B2")) + labs(y="-log10(P)", title="lncRNA") + geom_vline(xintercept=c(-0.58, 0.58), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red") + theme(legend.title=element_blank())
+```

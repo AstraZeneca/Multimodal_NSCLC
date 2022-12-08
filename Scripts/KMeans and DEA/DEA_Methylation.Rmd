@@ -1,0 +1,146 @@
+---
+title: "DEA_Methylation"
+output: html_document
+---
+
+# Packages
+
+```{r}
+# Loading Required Packages
+library(SummarizedExperiment)
+library(TCGAbiolinks)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(org.Hs.eg.db)
+library(data.table)
+if (!require(ggrepel)) install.packages('ggrepel')
+if (!require(DESeq2)) BiocManager::install('DESeq2')
+if (!require(limma)) BiocManager::install('limma')
+if (!require(EDASeq)) BiocManager::install('EDASeq')
+if (!require(edgeR)) BiocManager::install('edgeR')
+if (!require(ggsci)) install.packages('ggsci')
+if (!require(lumi)) BiocManager::install('lumi')
+if (!require(statmod)) install.packages('statmod')
+if (!require(IlluminaHumanMethylation450kanno.ilmn12.hg19)) BiocManager::install('IlluminaHumanMethylation450kanno.ilmn12.hg19')
+library(ggrepel)
+library(DESeq2)
+library(limma)
+library(EDASeq)
+library(edgeR)
+library(ggsci)
+library(lumi)
+library(statmod)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+```
+
+# Processing Methylation Data and changing from beta to M values
+
+```{r}
+# Loading Data
+load(file="~/desktop/Multimodal/DEA/DEA_Files/Barcodes/Bad_Barcodes.Rdata")
+load(file="~/desktop/Multimodal/Methylation/LUSC_meth_processed.Rdata") # Methylation Data
+
+# Preprocessing Methylation Data
+LUSC_meth <- column_to_rownames(LUSC_meth, "barcode")
+LUSC_meth <- LUSC_meth %>% dplyr::select(starts_with("c")) %>% dplyr::select(-c(censor_time1))
+
+# Setting up Methylation Data
+LUAD_meth <- as.data.frame(t(LUSC_meth))
+rows <- rownames(LUAD_meth)
+LUAD_meth <- as.data.frame(sapply(LUAD_meth, as.numeric))
+rownames(LUAD_meth) <- rows
+
+# Converting from Beta to M-Values for Analysis
+Mvalues <- beta2m(LUAD_meth)
+
+#Getting the right data and labels
+#badprognosis matrix
+BadPrognosis_Cluster <- Bad_Barcodes
+Mvalues_bad <- Mvalues %>% dplyr::select(matches(BadPrognosis_Cluster))
+Mvalues_bad <- as.matrix(Mvalues_bad)
+
+#goodprognosis matrix
+Mvalues_good <- Mvalues %>% dplyr::select(-c(matches(BadPrognosis_Cluster)))
+Mvalues_good <- as.matrix(Mvalues_good)
+
+# Merging M-Value Matrices
+Mvalues <- as.matrix(cbind(Mvalues_good, Mvalues_bad))
+class(Mvalues) <- "numeric"
+
+# Setting up Methylation Data for DEA (and making sure no missing or infinite values)
+group_list <- factor(x = c(rep("GoodPrognosis",405), rep("BadPrognosis",327)),
+    levels=c("GoodPrognosis","BadPrognosis"))
+design <- model.matrix(~group_list)
+Mvalues <- as.data.frame(Mvalues)
+Mvalues <- na.omit(Mvalues)
+Mvalues <- Mvalues[!is.infinite(rowSums(Mvalues)),]
+
+#Getting Annotations to Map Probes to Gene Level
+ann450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+rowname <- rownames(ann450k)
+ann450 <- cbind(rowname, ann450k$UCSC_RefGene_Name)
+Mvalues <- rownames_to_column(Mvalues)
+mapped_probes <- merge(ann450, Mvalues, by = "rowname")
+colnames(mapped_probes)[1] <- "Probes"
+colnames(mapped_probes)[2] <- "Genes"
+mapped_probes$Genes <- sub(';.*$','', mapped_probes$Genes)
+
+# Removing probes that don't line up to genes
+mapped_probes <- as.data.frame(mapped_probes)
+mapped_probes <- mapped_probes %>% filter(Genes!="")
+mapped_probes <- mapped_probes %>% dplyr::select(-c(Probes))
+mapped_probes <- na.omit(mapped_probes)
+
+#Averaging M Values across genes
+grouped_genes <- mapped_probes %>% group_by(Genes) %>% summarise_all(mean)
+grouped_genes <- column_to_rownames(grouped_genes, "Genes")
+diff_analysis <- as.matrix(na.omit(grouped_genes)) #18 genes removed due to missing values
+diff_analysis <- diff_analysis[complete.cases(diff_analysis), ]
+diff_analysis <- as.data.frame(cbind(t(diff_analysis),group_list))
+```
+
+# Doing Differential Expression Analysis
+
+```{r}
+# Creating an Empty Matrix for all ANOVA Test Info to Go Into
+DF <- rep(0,ncol(diff_analysis)-1)
+SumSq <- rep(0,ncol(diff_analysis)-1)
+MeanSq <- rep(0,ncol(diff_analysis)-1)
+FValue <- rep(0,ncol(diff_analysis)-1)
+PValue <- rep(0,ncol(diff_analysis)-1)
+Anova_DF <- as.data.frame(cbind(DF, SumSq, MeanSq, FValue, PValue))
+data_new <- diff_analysis
+
+# Using a Loop to Carry out an ANOVA For Each Gene
+for (i in 1:(ncol(data_new)-1)){
+  column <- names(data_new[i])
+  avz <- aov(data_new[,i] ~ group_list, data = data_new) # ANOVA Test
+  result = unlist(summary(avz))
+  Anova_DF[i,] <- result[c(1,3,5,7,9)]
+  rownames(Anova_DF)[i] <- column }
+Anova_DF <- Anova_DF %>% filter(DF!=0)
+```
+
+# Finding Mean M-Value Differences Between Each Group and Finalizing/Saving Results
+
+```{r}
+# Averaging Gene Methylation for Each Group (Good and Bad Prognosis)
+data_new$group_list <- as.factor(data_new$group_list)
+levels(data_new$group_list) <- c("GoodPrognosis", "BadPrognosis")
+meth_results <- data_new
+meth_results <- meth_results %>% group_by(group_list) %>% summarise_all(mean)
+meth_results <- column_to_rownames(meth_results, "group_list")
+meth_results <- as.data.frame(t(meth_results))
+
+# Getting Mean (And Absolute Mean) M-Value Differences Between Each Group
+meth_results_final <- meth_results %>% mutate(Mean_Difference = BadPrognosis-GoodPrognosis, abs_difference = abs(BadPrognosis-GoodPrognosis))
+meth_results_final <- rownames_to_column(meth_results_final)
+Anova_DF <- rownames_to_column(Anova_DF)
+meth_results_final <- meth_results_final %>% dplyr::select(c(rowname, Mean_Difference))
+meth_results_final <- merge(meth_results_final, Anova_DF, by="rowname")
+colnames(meth_results_final)[1] <- "Gene"
+
+# Saving Results as a .csv
+write.csv(meth_results_final,file="~/desktop/Multimodal/DEA/DEA_Results/Methylation_Results.csv")
+```
