@@ -4,7 +4,7 @@ This study presents a novel, autoencoder-based pipeline for both adenocarcinoma 
 
 # Implementation Instructions
 
-1. Download the zipped 'Multimodal' folder here: [Multimodal.zip](https://github.com/jellen44/Multimodal_NSCLC/files/8828858/Multimodal.zip)
+1. Download the zipped 'Multimodal' folder here: [Multimodal.zip](https://github.com/AstraZeneca/Multimodal_NSCLC/blob/master/Multimodal.zip?raw=true)
 2. Unzip the Multimodal folder and add it to your desktop.
 2. If you have not downloaded R, go to https://www.r-project.org/ and click the “Download R” link under the “Getting Started” header. Next, go to https://rstudio.com/products/rstudio/download/, choose the “RStudio Desktop” Option and click “Download.”
 3. Open and run the 'DownloadingData.Rmd' script above in R or R Studio, which will download mRNA, miRNA and DNA Methylation data directly from TCGA and save it into the Multimodal folder. 
